@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <script>
-      // Redirect all 404 requests back to index.html
-      sessionStorage.redirect = location.pathname;
+      // Redirect all paths to index.html for React Router
+      sessionStorage.redirect = location.pathname + location.search;
       window.location.replace("/Finance-Tracker/");
     </script>
   </head>
