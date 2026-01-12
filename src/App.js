@@ -17,11 +17,12 @@ import Transactions from './pages/Transactions';
 import Budgets from './pages/Budgets';
 import Settings from './pages/Settings';
 import Profile from './pages/Profile';
+import LoadingScreen from './pages/LoadingScreen';
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
   if (loading) {
-    return <div>Loading...</div>; // Or a spinner component
+    return <LoadingScreen />;
   }
   return user ? children : <Navigate to="/login" />;
 }
@@ -29,21 +30,21 @@ function PrivateRoute({ children }) {
 function App() {
   return (
     <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-      <Router>
+      <Router basename="/Finance-Tracker">
         <AuthProvider>
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
-            
+
             <Route path="/" element={<PrivateRoute><Layout /></PrivateRoute>}>
               <Route index element={<Navigate to="/dashboard" />} />
               <Route path="dashboard" element={<Dashboard />} />
               <Route path="transactions" element={<Transactions />} />
               <Route path="budgets" element={<Budgets />} />
               <Route path="settings" element={<Settings />} />
-              <Route path="/profile" element={<Profile />} />
+              <Route path="profile" element={<Profile />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/" />} />

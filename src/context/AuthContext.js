@@ -1,6 +1,6 @@
-// src/context/AuthContext.js
 import React, { createContext, useState, useEffect, useMemo, useRef } from 'react';
 import axios from 'axios';
+import apiInstance from '../config/api'; // your axios instance
 
 const AuthContext = createContext();
 
@@ -9,42 +9,69 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [accessToken, setAccessToken] = useState(() => localStorage.getItem('accessToken') || null);
 
-  // Keep a ref for accessToken so interceptors always read the latest value
   const accessTokenRef = useRef(accessToken);
   useEffect(() => {
     accessTokenRef.current = accessToken;
   }, [accessToken]);
 
-  // Memoize axios instance so it is stable between renders
+  // Axios instance with interceptors
   const api = useMemo(() => {
-    return axios.create({
-      baseURL: 'http://localhost:5000/api',
-      withCredentials: true, // important to send HttpOnly refresh cookie
-      headers: {
-        'Content-Type': 'application/json',
-      },
+    const instance = apiInstance;
+
+    // Request: attach token
+    instance.interceptors.request.use(config => {
+      const token = accessTokenRef.current;
+      if (token) config.headers.Authorization = `Bearer ${token}`;
+      return config;
     });
+
+    // Response: handle 401 → refresh
+    instance.interceptors.response.use(
+      res => res,
+      async error => {
+        const originalRequest = error.config;
+        if (!originalRequest || error.response?.status !== 401 || originalRequest._retry) return Promise.reject(error);
+
+        originalRequest._retry = true;
+        try {
+          const refreshResp = await axios.post(
+            `${process.env.REACT_APP_API_URL || 'https://finance-tracker-api-53xq.onrender.com/api'}/auth/refresh`,
+            {},
+            { withCredentials: true }
+          );
+
+          if (refreshResp.data?.accessToken) {
+            const newToken = refreshResp.data.accessToken;
+            saveAccessToken(newToken);
+            originalRequest.headers.Authorization = `Bearer ${newToken}`;
+            return instance(originalRequest);
+          } else {
+            logout();
+            return Promise.reject(error);
+          }
+        } catch (err) {
+          logout();
+          return Promise.reject(err);
+        }
+      }
+    );
+
+    return instance;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Helper: set tokens in state + localStorage
   const saveAccessToken = (token) => {
     setAccessToken(token);
     accessTokenRef.current = token;
-    if (token) {
-      localStorage.setItem('accessToken', token);
-    } else {
-      localStorage.removeItem('accessToken');
-    }
+    if (token) localStorage.setItem('accessToken', token);
+    else localStorage.removeItem('accessToken');
   };
 
-  // Logout function (defined before interceptor so it can be used when refresh fails)
   const logout = async () => {
     setLoading(true);
     try {
-      // call backend to clear refresh cookie (doesn't need Authorization header)
-      await api.get('/auth/logout');
+      await api.get('/auth/logout'); // clear refresh cookie
     } catch (err) {
-      // ignore backend logout errors but log for debugging
       console.error('Backend logout failed:', err);
     } finally {
       setUser(null);
@@ -53,17 +80,19 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Fetch user (exposed / used internally)
   const fetchUser = async () => {
     const token = accessTokenRef.current;
     if (!token) {
-      // try to refresh once automatically if no access token
       try {
-        const refreshResp = await axios.post('http://localhost:5000/api/auth/refresh', {}, { withCredentials: true });
+        const refreshResp = await axios.post(
+          `${process.env.REACT_APP_API_URL || 'https://finance-tracker-api-53xq.onrender.com/api'}/auth/refresh`,
+          {},
+          { withCredentials: true }
+        );
+
         if (refreshResp.data?.accessToken) {
           saveAccessToken(refreshResp.data.accessToken);
         } else {
-          // no token returned -> ensure logged out
           logout();
           return;
         }
@@ -74,85 +103,15 @@ export const AuthProvider = ({ children }) => {
     }
 
     try {
-      // use api instance which will attach Authorization via request interceptor (see below)
       const res = await api.get('/auth/me');
       setUser(res.data.data || null);
     } catch (err) {
-      // If 401, the response interceptor will attempt refresh; here just logout as fallback
       console.error('fetchUser error:', err);
       logout();
     }
   };
 
-  // Attach interceptors once (and clean up on unmount)
-  useEffect(() => {
-    // Request interceptor - attach the latest access token on every request
-    const reqInterceptor = api.interceptors.request.use(
-      (config) => {
-        const token = accessTokenRef.current;
-        if (token) {
-          config.headers = config.headers || {};
-          config.headers.Authorization = `Bearer ${token}`;
-        }
-        return config;
-      },
-      (error) => Promise.reject(error)
-    );
-
-    // Response interceptor - attempt refresh on 401 and retry original request
-    const resInterceptor = api.interceptors.response.use(
-      (response) => response,
-      async (error) => {
-        const originalRequest = error.config;
-
-        // If no response or config, just reject
-        if (!error.response || !originalRequest) return Promise.reject(error);
-
-        // Only handle 401 once per request
-        if (error.response.status === 401 && !originalRequest._retry) {
-          originalRequest._retry = true;
-          try {
-            // Attempt refresh using cookie (axios.post uses full URL because api is same-origin to backend but refresh uses axios to include cookie)
-            const refreshResp = await axios.post('http://localhost:5000/api/auth/refresh', {}, { withCredentials: true });
-
-            if (refreshResp?.data?.accessToken) {
-              const newToken = refreshResp.data.accessToken;
-              saveAccessToken(newToken);
-
-              // Update headers and retry original request
-              originalRequest.headers = originalRequest.headers || {};
-              originalRequest.headers.Authorization = `Bearer ${newToken}`;
-
-              // also update api defaults so subsequent requests have token
-              api.defaults.headers.common.Authorization = `Bearer ${newToken}`;
-
-              return api(originalRequest);
-            } else {
-              // Refresh endpoint did not return a token -> force logout
-              logout();
-              return Promise.reject(error);
-            }
-          } catch (refreshError) {
-            // Refresh failed (invalid/expired) -> logout user
-            console.error('Refresh token failed:', refreshError);
-            logout();
-            return Promise.reject(refreshError);
-          }
-        }
-
-        return Promise.reject(error);
-      }
-    );
-
-    return () => {
-      // eject interceptors on cleanup
-      api.interceptors.request.eject(reqInterceptor);
-      api.interceptors.response.eject(resInterceptor);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api]); // api is stable due to useMemo
-
-  // On mount: try to populate user (will attempt refresh if needed)
+  // On mount: fetch user and token
   useEffect(() => {
     const init = async () => {
       setLoading(true);
@@ -160,19 +119,16 @@ export const AuthProvider = ({ children }) => {
       setLoading(false);
     };
     init();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // run once
+  }, []);
 
   const login = async (email, password) => {
     setLoading(true);
     try {
       const res = await api.post('/auth/login', { email, password }, { withCredentials: true });
-
       if (res.data?.accessToken) {
-        saveAccessToken(res.data.accessToken);  // ✅ token saved synchronously
-        await fetchUser();                     // ✅ fetch user after token is saved
+        saveAccessToken(res.data.accessToken);
+        await fetchUser();
       }
-
       setLoading(false);
       return res;
     } catch (err) {
@@ -181,8 +137,6 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-
-  // Register
   const register = async (email, password) => {
     setLoading(true);
     try {
@@ -199,18 +153,17 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Expose context
   return (
     <AuthContext.Provider
       value={{
         user,
         loading,
         accessToken,
-        api, // axios instance (use for non-auth requests)
+        api,
         login,
         register,
         logout,
-        fetchUser, // optional: useful for manual refresh
+        fetchUser,
       }}
     >
       {children}
