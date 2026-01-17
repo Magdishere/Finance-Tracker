@@ -14,18 +14,48 @@ export const AuthProvider = ({ children }) => {
     accessTokenRef.current = accessToken;
   }, [accessToken]);
 
+  const logoutRef = useRef(false);
+
+  // Logout function
+  const logout = async () => {
+    if (logoutRef.current) return;
+    logoutRef.current = true;
+
+    setLoading(true);
+    try {
+      await api.get('/auth/logout'); // clear refresh cookie
+    } catch (err) {
+      console.error('Backend logout failed:', err);
+    } finally {
+      setUser(null);
+      saveAccessToken(null);
+      setLoading(false);
+      logoutRef.current = false;
+      // Redirect to login page
+      window.location.href = '/login';
+    }
+  };
+
+  // Save access token
+  const saveAccessToken = (token) => {
+    setAccessToken(token);
+    accessTokenRef.current = token;
+    if (token) localStorage.setItem('accessToken', token);
+    else localStorage.removeItem('accessToken');
+  };
+
   // Axios instance with interceptors
   const api = useMemo(() => {
     const instance = apiInstance;
 
-    // Request: attach token
+    // Request: attach access token
     instance.interceptors.request.use(config => {
       const token = accessTokenRef.current;
       if (token) config.headers.Authorization = `Bearer ${token}`;
       return config;
     });
 
-    // Response: handle 401 → refresh
+    // Response: handle 401 → refresh once
     instance.interceptors.response.use(
       res => res,
       async error => {
@@ -60,58 +90,40 @@ export const AuthProvider = ({ children }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const saveAccessToken = (token) => {
-    setAccessToken(token);
-    accessTokenRef.current = token;
-    if (token) localStorage.setItem('accessToken', token);
-    else localStorage.removeItem('accessToken');
-  };
-
-  const logout = async () => {
-    setLoading(true);
-    try {
-      await api.get('/auth/logout'); // clear refresh cookie
-    } catch (err) {
-      console.error('Backend logout failed:', err);
-    } finally {
-      setUser(null);
-      saveAccessToken(null);
-      setLoading(false);
-    }
-  };
-
+  // Fetch current user
   const fetchUser = async () => {
-    const token = accessTokenRef.current;
-    if (!token) {
-      try {
-        const refreshResp = await axios.post(
-          `${process.env.REACT_APP_API_URL || 'https://finance-tracker-api-53xq.onrender.com/api'}/auth/refresh`,
-          {},
-          { withCredentials: true }
-        );
-
-        if (refreshResp.data?.accessToken) {
-          saveAccessToken(refreshResp.data.accessToken);
-        } else {
-          logout();
-          return;
-        }
-      } catch (err) {
-        logout();
-        return;
-      }
-    }
-
     try {
+      // Try fetching /me first
       const res = await api.get('/auth/me');
       setUser(res.data.data || null);
     } catch (err) {
-      console.error('fetchUser error:', err);
-      logout();
+      if (err.response?.status === 401) {
+        // Attempt refresh
+        try {
+          const refreshResp = await axios.post(
+            `${process.env.REACT_APP_API_URL || 'https://finance-tracker-api-53xq.onrender.com/api'}/auth/refresh`,
+            {},
+            { withCredentials: true }
+          );
+
+          if (refreshResp.data?.accessToken) {
+            saveAccessToken(refreshResp.data.accessToken);
+            const retry = await api.get('/auth/me');
+            setUser(retry.data.data || null);
+          } else {
+            logout();
+          }
+        } catch {
+          logout();
+        }
+      } else {
+        console.error('fetchUser error:', err);
+        logout();
+      }
     }
   };
 
-  // On mount: fetch user and token
+  // On mount: fetch user
   useEffect(() => {
     const init = async () => {
       setLoading(true);
@@ -119,8 +131,10 @@ export const AuthProvider = ({ children }) => {
       setLoading(false);
     };
     init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Login
   const login = async (email, password) => {
     setLoading(true);
     try {
@@ -137,6 +151,7 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  // Register
   const register = async (email, password) => {
     setLoading(true);
     try {
