@@ -43,8 +43,8 @@ const Dashboard = () => {
                 api.get('/budgets')
             ]);
 
-            const transactions = transactionsRes.data.data;
-            const budgets = budgetsRes.data.data;
+            const transactions = transactionsRes.data;
+            const budgets = budgetsRes.data;
 
             const currentMonthTransactions = transactions.filter(t => {
                 const tDate = new Date(t.date);
